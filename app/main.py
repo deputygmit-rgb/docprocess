@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
@@ -23,6 +24,15 @@ app = FastAPI(
     description="Document processing API with graph-based layout extraction"
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
 async def root():
@@ -43,6 +53,12 @@ async def upload_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is empty")
+    
     allowed_extensions = {'.pdf', '.docx', '.pptx', '.xlsx'}
     file_ext = os.path.splitext(file.filename)[1].lower()
     
@@ -79,7 +95,12 @@ async def upload_document(
         db.commit()
         db.refresh(doc)
         
-        process_document_task.delay(doc.id)
+        # Run task synchronously
+        result = process_document_task.apply_async((doc.id,))
+        result.get(timeout=30)  # Wait for result
+        
+        # Refresh document to get updated status
+        db.refresh(doc)
         
         return {
             "document_id": doc.id,
@@ -87,7 +108,8 @@ async def upload_document(
             "file_type": doc.file_type,
             "file_size": doc.file_size,
             "status": doc.status,
-            "message": "Document uploaded successfully and queued for processing"
+            "error_message": doc.error_message,
+            "message": "Document processed successfully" if doc.status == ProcessingStatus.COMPLETED else f"Document processing {doc.status}"
         }
         
     except Exception as e:

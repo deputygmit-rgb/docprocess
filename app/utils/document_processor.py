@@ -8,6 +8,155 @@ import io
 import base64
 import os
 from typing import List, Dict, Any
+import re
+import unicodedata
+
+
+def clean_text(text: str) -> str:
+    """Clean text: fix encoding issues, normalize unicode, remove control characters"""
+    if not text:
+        return text
+    
+    # Normalize unicode (decompose special characters)
+    text = unicodedata.normalize('NFKD', text)
+    
+    # Remove control characters but keep common ones (newline, tab)
+    text = ''.join(
+        char if unicodedata.category(char)[0] != 'C' or char in '\n\r\t'
+        else '' for char in text
+    )
+    
+    # Fix common encoding issues
+    replacements = {
+        '\xa0': ' ',      # Non-breaking space -> space
+        '\u2013': '-',    # En dash -> hyphen
+        '\u2014': '-',    # Em dash -> hyphen
+        '\u2019': "'",    # Right single quote -> apostrophe
+        '\u201c': '"',    # Left double quote -> quote
+        '\u201d': '"',    # Right double quote -> quote
+        '\u2022': '•',    # Bullet point (keep but normalize)
+    }
+    
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Clean up extra whitespace but preserve structure
+    lines = []
+    for line in text.split('\n'):
+        line = line.rstrip()  # Remove trailing whitespace
+        if line:
+            lines.append(line)
+    
+    text = '\n'.join(lines)
+    return text
+
+
+def normalize_bullets(text: str) -> str:
+    """Normalize bullet points to consistent format"""
+    lines = text.split('\n')
+    normalized_lines = []
+    
+    for line in lines:
+        stripped = line.lstrip()
+        
+        # Detect bullet markers
+        bullet_patterns = [
+            (r'^[\•\-\*\+]\s+', '• '),          # Bullet, dash, asterisk, plus
+            (r'^\d+[\.\)]\s+', lambda m: f"{m.group(0)[0]}. "),  # Numbered
+            (r'^[a-zA-Z][\.\)]\s+', lambda m: f"{m.group(0)[0]}. "),  # Lettered
+        ]
+        
+        for pattern, replacement in bullet_patterns:
+            if re.match(pattern, stripped):
+                stripped = re.sub(pattern, replacement, stripped)
+                break
+        
+        # Preserve indentation
+        indent = len(line) - len(line.lstrip())
+        if indent > 0:
+            normalized_lines.append(' ' * indent + stripped)
+        else:
+            normalized_lines.append(stripped)
+    
+    return '\n'.join(normalized_lines)
+
+
+def clean_element_text(text: str) -> str:
+    """Full text cleaning pipeline"""
+    text = clean_text(text)
+    text = normalize_bullets(text)
+    return text
+
+
+def normalize_table(text: str) -> Dict[str, Any]:
+    """Convert unstructured table text into normalized column structure with proper JSON rows"""
+    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
+    
+    if not lines:
+        return {"columns": [], "rows": [], "row_count": 0, "column_count": 0}
+    
+    # Parse rows - split by multiple spaces or tabs
+    parsed_rows = []
+    for line in lines:
+        # Split by multiple spaces (2+) or tabs
+        cells = re.split(r'\s{2,}|\t|\|', line)
+        # Clean and filter cells
+        cells = [cell.strip() for cell in cells if cell.strip()]
+        if cells:
+            parsed_rows.append(cells)
+    
+    if not parsed_rows:
+        return {"columns": [], "rows": [], "row_count": 0, "column_count": 0}
+    
+    # Determine number of columns
+    max_cols = max(len(row) for row in parsed_rows)
+    
+    # Detect header row (usually first row or row with non-numeric content)
+    header = None
+    data_start = 0
+    
+    if len(parsed_rows) > 1:
+        first_row = parsed_rows[0]
+        # Check if first row looks like a header
+        is_header = any(
+            not any(c.isdigit() for c in cell) and len(cell) > 0
+            for cell in first_row
+        )
+        
+        if is_header:
+            header = first_row + [''] * (max_cols - len(first_row))
+            data_start = 1
+    
+    # Use first row as header if not detected
+    if header is None:
+        header = [f"Column_{i+1}" for i in range(max_cols)]
+        data_start = 0
+    
+    # Normalize all rows to have same column count
+    normalized_rows = []
+    for row in parsed_rows[data_start:]:
+        # Pad or trim to match column count
+        normalized_row = (row + [''] * max_cols)[:max_cols]
+        # Convert to dictionary using headers
+        row_dict = {
+            header[i]: normalized_row[i] 
+            for i in range(len(header))
+        }
+        normalized_rows.append(row_dict)
+    
+    return {
+        "columns": header[:max_cols],
+        "rows": normalized_rows,
+        "row_count": len(normalized_rows),
+        "column_count": len(header),
+        "raw_data": {
+            "max_columns": max_cols,
+            "rows": [
+                (row + [''] * max_cols)[:max_cols]
+                for row in parsed_rows[data_start:]
+            ]
+        }
+    }
 
 
 class DocumentProcessor:

@@ -11,6 +11,7 @@ from app.services.qdrant_service import QdrantService
 from datetime import datetime
 import os
 import hashlib
+import time
 
 settings = get_settings()
 
@@ -37,8 +38,8 @@ except Exception as e:
 
 celery_app = Celery(
     "document_processor",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND
+    broker=settings.CELERY_BROKER_URL if "redis" in settings.CELERY_BROKER_URL else "memory://",
+    backend=settings.CELERY_RESULT_BACKEND if "redis" in settings.CELERY_RESULT_BACKEND else "cache+memory://"
 )
 
 celery_app.conf.update(
@@ -47,6 +48,8 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    task_always_eager=True,
+    task_eager_propagates=True,
 )
 
 
@@ -142,41 +145,71 @@ def _process_document_impl(document_id: int):
             
             elif file_ext == '.xlsx':
                 sheets = processor.xlsx_extract_data(doc.file_path)
-                layout_data = [{
-                    "page_number": idx + 1,
-                    "layout": {
-                        "elements": [{
-                            "id": f"table_{idx}",
-                            "type": "table",
-                            "text": str(sheet['data'][:10]),
-                            "bbox": [0, 0, 100, 100]
-                        }],
-                        "relationships": []
-                    }
-                } for idx, sheet in enumerate(sheets)]
+                layout_data = []
+                for idx, sheet in enumerate(sheets):
+                    # Normalize Excel sheet data to column structure
+                    from app.utils.document_processor import normalize_table
+                    normalized = normalize_table(str(sheet['data']))
+                    
+                    layout_data.append({
+                        "page_number": idx + 1,
+                        "layout": {
+                            "elements": [{
+                                "id": f"table_{idx}",
+                                "type": "table",
+                                "text": f"Table: {sheet['sheet_name']}",
+                                "bbox": [0, 0, 100, 100],
+                                "table_data": normalized
+                            }],
+                            "relationships": []
+                        }
+                    })
             
             elif file_ext == '.docx':
                 docx_data = processor.docx_extract_text(doc.file_path)
+                from app.utils.document_processor import normalize_table
+                
+                elements = [
+                    {
+                        "id": f"para_{idx}",
+                        "type": "paragraph",
+                        "text": para,
+                        "bbox": [0, idx * 20, 100, (idx + 1) * 20]
+                    }
+                    for idx, para in enumerate(docx_data['paragraphs'][:20])
+                ]
+                
+                # Add normalized tables
+                for t_idx, table in enumerate(docx_data.get('tables', [])[:5]):
+                    normalized = normalize_table('\n'.join(str(row) for row in table))
+                    elements.append({
+                        "id": f"table_{t_idx}",
+                        "type": "table",
+                        "text": f"Table {t_idx + 1}",
+                        "bbox": [0, 0, 100, 100],
+                        "table_data": normalized
+                    })
+                
                 layout_data = [{
                     "page_number": 1,
                     "layout": {
-                        "elements": [
-                            {
-                                "id": f"para_{idx}",
-                                "type": "paragraph",
-                                "text": para,
-                                "bbox": [0, idx * 20, 100, (idx + 1) * 20]
-                            }
-                            for idx, para in enumerate(docx_data['paragraphs'][:20])
-                        ],
+                        "elements": elements,
                         "relationships": []
                     }
                 }]
             
-            graph = graph_service.build_document_graph(layout_data)
+            graph = graph_service.build_document_graph(layout_data, document_id=document_id)
             graph_dict = graph_service.graph_to_dict(graph)
             
+            # Time the JSON generation
+            json_start_time = time.time()
             processed_result = post_processor.process_graph_data(graph_dict)
+            json_generation_time = time.time() - json_start_time
+            
+            # Add timing information to processed result
+            if isinstance(processed_result.get('processed_data'), dict):
+                processed_result['processed_data']['generation_time_seconds'] = round(json_generation_time, 2)
+                processed_result['processed_data']['generated_at'] = datetime.utcnow().isoformat()
             
             chunks = []
             for node in graph_dict.get('nodes', []):
