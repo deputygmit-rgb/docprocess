@@ -7,7 +7,7 @@ url = "http://localhost:5000/upload"
 # Test files - update these paths to your actual test files
 test_files = [
     # Document formats
-    "uploads/Draft.pdf",           # PDF
+    "uploads/test_document.pdf",           # PDF
     #"uploads/document.docx",       # Word document
     #"uploads/document.doc",        # Older Word format
     #"uploads/presentation.pptx",   # PowerPoint
