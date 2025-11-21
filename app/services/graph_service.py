@@ -3,7 +3,6 @@ from typing import List, Dict, Any
 import json
 import hashlib
 import numpy as np
-from app.utils.document_processor import clean_element_text
 
 
 def generate_simple_embedding(text: str, dim: int = 768) -> list:
@@ -40,13 +39,16 @@ class GraphService:
             elements = layout.get("elements", [])
             relationships = layout.get("relationships", [])
             
+            # Get chart details if available
+            chart_details = page_data.get("chart_details", [])
+            chart_detail_map = {chart.get("chart_index"): chart for chart in chart_details}
+            
+            chart_counter = 0
             for element in elements:
                 element_id = f"p{page_num}_{element.get('id', 'unknown')}"
-                raw_text = element.get("text", "")
-                
-                # Clean the text
-                text = clean_element_text(raw_text) if raw_text else ""
+                text = element.get("text", "")
                 element_type = element.get("type", "")
+                is_chart = element.get("is_chart", False)
                 
                 # Generate embeddings only if text exists
                 content_embedding_created = False
@@ -100,8 +102,30 @@ class GraphService:
                     "extraction_confidence": element.get("confidence", 0.0),
                     "content_embedding": content_embedding_created,
                     "context_embedding": context_embedding_created,
-                    "combined_embedding": combined_embedding_created
+                    "combined_embedding": combined_embedding_created,
+                    "is_chart": is_chart
                 }
+                
+                # Add detailed chart information if this is a chart
+                if is_chart and chart_counter in chart_detail_map:
+                    chart_detail = chart_detail_map[chart_counter]
+                    node_data["chart_details"] = {
+                        "chart_type": chart_detail.get("chart_type", "unknown"),
+                        "chart_title": chart_detail.get("chart_title", ""),
+                        "chart_area": chart_detail.get("chart_area", {}),
+                        "plot_area": chart_detail.get("plot_area", {}),
+                        "data_series": chart_detail.get("data_series", []),
+                        "horizontal_axis": chart_detail.get("horizontal_axis", {}),
+                        "vertical_axis": chart_detail.get("vertical_axis", {}),
+                        "axis_titles": chart_detail.get("axis_titles", {}),
+                        "legend": chart_detail.get("legend", {}),
+                        "data_labels": chart_detail.get("data_labels", []),
+                        "gridlines": chart_detail.get("gridlines", {}),
+                        "key_insights": chart_detail.get("key_insights", "")
+                    }
+                    chart_counter += 1
+                elif element_type == "chart":
+                    chart_counter += 1
                 
                 G.add_node(element_id, **node_data)
             

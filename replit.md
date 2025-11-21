@@ -1,4 +1,4 @@
-# Document Processor API - Replit Project
+# Document Processor API -
 
 ## Overview
 A comprehensive FastAPI-based document processing pipeline with vision-based layout extraction, graph construction, and LLM-powered context retrieval. The system processes PDF, DOC, PPT, and XLSX documents to extract structured data, build relationship graphs, and generate contextual JSON summaries.

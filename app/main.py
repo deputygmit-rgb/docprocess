@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.database import get_db, engine
 from app.models.document import Base, Document, ProcessingStatus
 from app.services.celery_app import process_document_task
+from app.services.vision_service import VisionService
 
 settings = get_settings()
 
@@ -48,6 +49,28 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 
+@app.post("/api/extract-layout")
+async def extract_layout(request: dict):
+    """Extract layout and chart details from an image.
+    
+    Request body:
+    {
+        "image": "data:image/jpeg;base64,..." or "data:image/png;base64,..."
+    }
+    """
+    try:
+        image_data = request.get("image")
+        if not image_data:
+            raise HTTPException(status_code=400, detail="No image provided")
+        
+        vision_service = VisionService()
+        result = vision_service.extract_layout(image_data, page_number=1)
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Layout extraction failed: {str(e)}")
+
+
 @app.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -59,13 +82,13 @@ async def upload_document(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is empty")
     
-    allowed_extensions = {'.pdf', '.docx', '.pptx', '.xlsx'}
+    allowed_extensions = {'.pdf', '.docx', '.pptx', '.xlsx', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.doc', '.odt', '.ppt', '.odp', '.xls', '.ods'}
     file_ext = os.path.splitext(file.filename)[1].lower()
     
     if file_ext not in allowed_extensions:
         raise HTTPException(
             status_code=400,
-            detail=f"File type not supported. Allowed: {', '.join(allowed_extensions)}"
+            detail=f"File type not supported. Allowed: {', '.join(sorted(allowed_extensions))}"
         )
     
     file_path = os.path.join(settings.UPLOAD_DIR, f"{datetime.utcnow().timestamp()}_{file.filename}")

@@ -94,7 +94,7 @@ Return only the JSON, no additional text."""
                 temperature=0.3,
                 max_tokens=3000,
                 extra_headers={
-                    "HTTP-Referer": "https://replit.com",
+                    "HTTP-Referer": "",
                     "X-Title": "Document Processor"
                 }
             )

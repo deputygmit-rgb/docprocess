@@ -17,23 +17,22 @@ settings = get_settings()
 
 try:
     if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY:
-        from langfuse import Langfuse
-        from langfuse.decorators import observe as langfuse_observe, langfuse_context
-        
-        langfuse_client = Langfuse(
-            public_key=settings.LANGFUSE_PUBLIC_KEY,
-            secret_key=settings.LANGFUSE_SECRET_KEY,
-            host=settings.LANGFUSE_HOST
-        )
-        LANGFUSE_ENABLED = True
+        try:
+            from langfuse import Langfuse
+            langfuse_client = Langfuse(
+                public_key=settings.LANGFUSE_PUBLIC_KEY,
+                secret_key=settings.LANGFUSE_SECRET_KEY,
+                host=settings.LANGFUSE_HOST
+            )
+            LANGFUSE_ENABLED = True
+        except ImportError:
+            print("Langfuse decorators not available, tracing disabled")
+            langfuse_client = None
+            LANGFUSE_ENABLED = False
     else:
-        langfuse_observe = None
-        langfuse_context = None
         LANGFUSE_ENABLED = False
 except Exception as e:
-    print(f"Langfuse initialization failed: {e}")
-    langfuse_observe = None
-    langfuse_context = None
+    print(f"Langfuse initialization warning: {e}")
     LANGFUSE_ENABLED = False
 
 celery_app = Celery(
@@ -75,6 +74,8 @@ def generate_simple_embedding(text: str, dim: int = 768) -> list:
 
 
 def _process_document_impl(document_id: int):
+    langfuse_trace = None
+    
     with get_db_context() as db:
         from app.models.document import Document
         
@@ -88,19 +89,34 @@ def _process_document_impl(document_id: int):
         
         if LANGFUSE_ENABLED:
             try:
-                langfuse_context.update_current_trace(
-                    user_id=f"doc_{document_id}",
-                    metadata={"document_id": document_id, "filename": doc.filename},
-                    tags=["document_processing", doc.file_type]
+                # Initialize Langfuse trace for this document processing
+                langfuse_trace = langfuse_client.trace(
+                    name="process_document",
+                    input={
+                        "document_id": document_id,
+                        "file_name": doc.file_name,
+                        "file_type": doc.file_type,
+                        "file_path": doc.file_path
+                    },
+                    metadata={
+                        "document_id": str(document_id),
+                        "file_type": doc.file_type
+                    }
                 )
             except Exception as e:
-                print(f"Langfuse trace update warning: {e}")
+                print(f"Langfuse trace initialization warning: {e}")
+                langfuse_trace = None
         
         try:
             if not settings.OPENROUTER_API_KEY:
                 doc.status = ProcessingStatus.FAILED
                 doc.error_message = "OPENROUTER_API_KEY not configured. Vision processing requires API key."
                 db.commit()
+                if langfuse_trace:
+                    try:
+                        langfuse_trace.event(name="api_key_missing", input={"error": "OPENROUTER_API_KEY not set"})
+                    except Exception as e:
+                        print(f"Langfuse event warning: {e}")
                 return {
                     "document_id": document_id,
                     "status": "failed",
@@ -116,6 +132,19 @@ def _process_document_impl(document_id: int):
             
             layout_data = []
             
+            # Track extraction phase
+            if langfuse_trace:
+                try:
+                    extraction_span = langfuse_trace.span(
+                        name="document_extraction",
+                        input={"file_type": file_ext}
+                    )
+                except Exception as e:
+                    print(f"Langfuse span warning: {e}")
+                    extraction_span = None
+            else:
+                extraction_span = None
+            
             if file_ext == '.pdf':
                 pages = processor.pdf_extract_pages(doc.file_path)
                 
@@ -128,7 +157,17 @@ def _process_document_impl(document_id: int):
                     )
                     layout_data.append(layout_result)
             
-            elif file_ext == '.pptx':
+            elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+                # Handle image files directly
+                img_base64 = processor.image_to_base64_from_file(doc.file_path)
+                
+                layout_result = vision_service.extract_layout(
+                    img_base64,
+                    page_number=1
+                )
+                layout_data.append(layout_result)
+            
+            elif file_ext in ['.pptx', '.ppt', '.odp']:
                 slides = processor.ppt_to_images(doc.file_path)
                 layout_data = [{
                     "page_number": slide['slide_number'],
@@ -143,7 +182,7 @@ def _process_document_impl(document_id: int):
                     }
                 } for slide in slides[:5]]
             
-            elif file_ext == '.xlsx':
+            elif file_ext in ['.xlsx', '.xls', '.ods']:
                 sheets = processor.xlsx_extract_data(doc.file_path)
                 layout_data = []
                 for idx, sheet in enumerate(sheets):
@@ -165,7 +204,7 @@ def _process_document_impl(document_id: int):
                         }
                     })
             
-            elif file_ext == '.docx':
+            elif file_ext in ['.docx', '.doc', '.odt']:
                 docx_data = processor.docx_extract_text(doc.file_path)
                 from app.utils.document_processor import normalize_table
                 
@@ -201,6 +240,18 @@ def _process_document_impl(document_id: int):
             graph = graph_service.build_document_graph(layout_data, document_id=document_id)
             graph_dict = graph_service.graph_to_dict(graph)
             
+            if langfuse_trace:
+                try:
+                    langfuse_trace.event(
+                        name="graph_built",
+                        input={
+                            "nodes": graph_dict.get('node_count', 0),
+                            "edges": graph_dict.get('edge_count', 0)
+                        }
+                    )
+                except Exception as e:
+                    print(f"Langfuse graph event warning: {e}")
+            
             # Time the JSON generation
             json_start_time = time.time()
             processed_result = post_processor.process_graph_data(graph_dict)
@@ -210,6 +261,18 @@ def _process_document_impl(document_id: int):
             if isinstance(processed_result.get('processed_data'), dict):
                 processed_result['processed_data']['generation_time_seconds'] = round(json_generation_time, 2)
                 processed_result['processed_data']['generated_at'] = datetime.utcnow().isoformat()
+            
+            if langfuse_trace:
+                try:
+                    langfuse_trace.event(
+                        name="processing_complete",
+                        input={
+                            "generation_time_seconds": round(json_generation_time, 2),
+                            "elements_processed": len(processed_result.get('processed_data', {}).get('elements', []))
+                        }
+                    )
+                except Exception as e:
+                    print(f"Langfuse processing event warning: {e}")
             
             chunks = []
             for node in graph_dict.get('nodes', []):
@@ -248,6 +311,19 @@ def _process_document_impl(document_id: int):
             
             db.commit()
             
+            if langfuse_trace:
+                try:
+                    langfuse_trace.end(
+                        output={
+                            "status": "completed",
+                            "elements_extracted": graph_dict.get('node_count', 0),
+                            "document_id": document_id
+                        }
+                    )
+                    langfuse_client.flush()
+                except Exception as e:
+                    print(f"Langfuse trace end warning: {e}")
+            
             return {
                 "document_id": document_id,
                 "status": "completed",
@@ -255,6 +331,19 @@ def _process_document_impl(document_id: int):
             }
             
         except Exception as e:
+            if langfuse_trace:
+                try:
+                    langfuse_trace.end(
+                        output={
+                            "status": "failed",
+                            "error": str(e),
+                            "document_id": document_id
+                        }
+                    )
+                    langfuse_client.flush()
+                except Exception as trace_e:
+                    print(f"Langfuse trace error logging warning: {trace_e}")
+            
             doc.status = ProcessingStatus.FAILED
             doc.error_message = str(e)
             db.commit()
@@ -267,8 +356,10 @@ def _process_document_impl(document_id: int):
 
 
 if LANGFUSE_ENABLED:
-    process_document_task = celery_app.task(name="process_document")(
-        langfuse_observe()(_process_document_impl)
-    )
+    try:
+        process_document_task = celery_app.task(name="process_document")(_process_document_impl)
+    except Exception as e:
+        print(f"Langfuse task decoration failed: {e}")
+        process_document_task = celery_app.task(name="process_document")(_process_document_impl)
 else:
     process_document_task = celery_app.task(name="process_document")(_process_document_impl)

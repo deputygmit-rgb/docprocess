@@ -8,12 +8,14 @@ settings = get_settings()
 
 class CacheService:
     def __init__(self):
+        self.enabled = False
         try:
-            self.redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+            self.redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=1)
             self.redis_client.ping()
             self.enabled = True
+            print("Redis connected successfully")
         except Exception as e:
-            print(f"Redis connection failed: {e}. Caching disabled.")
+            # Silently disable caching if Redis unavailable
             self.redis_client = None
             self.enabled = False
     
