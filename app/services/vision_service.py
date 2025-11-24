@@ -162,41 +162,6 @@ Return ONLY this JSON structure (no markdown, no extra text):
     "legend_clarity": "clear|somewhat clear|unclear",
     "overall_readability": "excellent|good|poor"
   }}
-}}"
-
-    "axis_title": "Y-axis title if present",
-    "value_range": {{"min": "value", "max": "value"}},
-    "scale": "linear|logarithmic",
-    "visible_tick_labels": ["label1", "label2"]
-  }},
-  "axis_titles": {{
-    "x_axis_title": "title if present",
-    "y_axis_title": "title if present",
-    "secondary_x_axis_title": "if present",
-    "secondary_y_axis_title": "if present"
-  }},
-  "legend": {{
-    "position": "top|bottom|right|left|none",
-    "entries": [
-      {{"name": "series name", "color": "color", "symbol": "symbol type"}}
-    ],
-    "is_visible": true,
-    "orientation": "horizontal|vertical"
-  }},
-  "data_labels": [
-    {{
-      "position": "location in chart",
-      "text": "label text",
-      "format": "percentage|absolute|currency"
-    }}
-  ],
-  "gridlines": {{
-    "horizontal_gridlines": {{"visible": true, "style": "solid|dashed", "color": "color"}},
-    "vertical_gridlines": {{"visible": true, "style": "solid|dashed", "color": "color"}},
-    "major_gridlines": "visible or not",
-    "minor_gridlines": "visible or not"
-  }},
-  "key_insights": "summary of what the chart shows, main data points, trends, or important patterns"
 }}
 
 IMPORTANT:
@@ -258,45 +223,93 @@ IMPORTANT:
                 "error": "OPENROUTER_API_KEY not configured"
             }
         
-        prompt = f"""Analyze this document page {page_number} and identify ALL layout elements with special focus on charts.
-
-Return a JSON object with this exact structure:
-{{
+        layout_schema = """{
   "elements": [
-    {{
-      "id": "element_id",
-      "type": "paragraph|table|chart|image|heading",
-      "text": "extracted text content or chart title",
+    {
+      "id": "element_1",
+      "type": "paragraph|table|chart|image|heading|list|footer|header|caption|shape",
+      "text": "full extracted OCR text; for tables include cell-by-cell raw text; for charts include chart title and axis labels",
       "bbox": [x1, y1, x2, y2],
-      "confidence": 0.95,
-      "is_chart": false
-    }}
+      "confidence": 0.0-1.0,
+      "is_chart": true/false,
+      "metadata": {
+        "table_structure": {
+          "rows": "int",
+          "columns": "int",
+          "cell_text": "[[...], [...]]"
+        },
+        "chart_type": "bar|line|pie|scatter|area|combo|unknown",
+        "chart_axes": {
+          "x_axis_labels": "array",
+          "y_axis_labels": "array"
+        },
+        "image_description": "short description, no hallucination"
+      }
+    }
   ],
   "relationships": [
-    {{
-      "from": "element_id1",
-      "to": "element_id2",
-      "type": "describes|references|follows|contains"
-    }}
+    {
+      "from": "element_id",
+      "to": "element_id",
+      "type": "follows|above|below|left_of|right_of|contains|describes|references|supported_by|child_of"
+    }
   ],
-  "chart_count": number_of_charts_detected
-}}
+  "page_properties": {
+    "width": "number",
+    "height": "number",
+    "dpi": "number"
+  },
+  "chart_count": "int"
+}"""
+        
+        prompt = f"""You are a highly accurate document-layout extraction engine. Analyze this document page {page_number}. Extract EVERY visible layout element with pixel-level precision, including extremely small, low-contrast, rotated, partial, cropped, or composite elements.
 
-CHART DETECTION REQUIREMENTS:
-- Identify ALL charts (bar, line, pie, scatter, area, etc.)
-- Mark chart elements with "is_chart": true
-- Include chart title, type, and brief description in "text" field
-- Mark each chart position with accurate bbox
+Return ONLY a valid JSON object with this exact structure and no other text:
 
-Detect:
-- Paragraphs with their text content
-- Tables with structure and content
-- Charts and figures (MUST identify all charts)
-- Images
-- Headings and titles
-- Spatial relationships between elements
+{layout_schema}
 
-Return only the JSON object, no additional text."""
+CRITICAL REQUIREMENTS:
+1. DO NOT SKIP ANY ELEMENT.
+   - Detect ALL paragraphs (even 1-2 words)
+   - Detect ALL tables (even partial/merged cells)
+   - Detect ALL charts (bar, line, pie, scatter, area, donut, heatmap, multi-axis, combination charts)
+   - Detect ALL images, photos, illustrations
+   - Detect ALL headings (any large/bold text)
+   - Detect ALL bullet/numbered lists
+   - Detect ALL captions under charts or images
+   - Detect shapes (lines, boxes) if associated with structure
+
+2. TABLE REQUIREMENTS
+   - MUST provide row count and column count
+   - MUST extract all visible cell text
+   - MUST maintain reading order
+   - MUST preserve merged or multi-line cell content
+
+3. CHART REQUIREMENTS
+   - MUST classify chart_type
+   - MUST extract chart title (if visible)
+   - MUST extract x-axis labels and y-axis labels
+   - MUST set "is_chart": true
+   - MUST provide bbox tightly around the chart
+
+4. OCR REQUIREMENTS
+   - Use full OCR for every visible text region
+   - Do not paraphrase or summarize text
+   - Extract text exactly as shown
+
+5. RELATIONSHIP REQUIREMENTS
+   - Must compute explicit spatial relationships (above, below, left_of, contains)
+   - Must compute semantic relationships (describes, references)
+   - Must respect reading flow
+
+6. OUTPUT REQUIREMENTS
+   - Output ONLY the JSON object
+   - No markdown
+   - No backticks
+   - No narrative text
+   - JSON MUST be valid and parseable
+
+Return ONLY valid JSON matching this schema."""
 
         try:
             response = self.client.chat.completions.create(
@@ -310,8 +323,8 @@ Return only the JSON object, no additional text."""
                         ]
                     }
                 ],
-                temperature=0.1,
-                max_tokens=4000,
+                temperature=0.2,
+                max_tokens=3000,
                 extra_headers={
                     "HTTP-Referer": "",
                     "X-Title": "Document Processor"

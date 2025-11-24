@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: docgraph_postgres
+    restart: unless-stopped
+    
+    environment:
+      POSTGRES_USER: ${DB_USER:-docuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password_change_me}
+      POSTGRES_DB: ${DB_NAME:-document_processor}
+    
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    
+    volumes:
+      # Persistent data storage
+      - postgres_data:/var/lib/postgresql/data
+      
+      # Optional: mount initialization scripts
+      # - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-docuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    
+    networks:
+      - docgraph_network
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: docgraph_pgadmin
+    restart: unless-stopped
+    
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@docgraph.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    
+    ports:
+      - "5050:80"
+    
+    depends_on:
+      - postgres
+    
+    networks:
+      - docgraph_network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  docgraph_network:
+    driver: bridge

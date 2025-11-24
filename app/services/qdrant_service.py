@@ -68,9 +68,10 @@ class QdrantService:
                 ]
             )
         
-        results = self.client.search(
+        # Use query_points for newer qdrant-client API
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_embedding,
+            query=query_embedding,
             query_filter=query_filter,
             limit=limit
         )
@@ -81,7 +82,7 @@ class QdrantService:
                 "score": result.score,
                 "payload": result.payload
             }
-            for result in results
+            for result in results.points
         ]
     
     def delete_document_chunks(self, document_id: int):

@@ -6,7 +6,16 @@ class Settings(BaseSettings):
     APP_NAME: str = "Document Processor API"
     VERSION: str = "1.0.0"
     
-    DATABASE_URL: str = "sqlite:///./documents.db"
+    # PostgreSQL Configuration
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 5432
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str = "1234"
+    DB_NAME: str = "document_processor"
+    
+    @property
+    def DATABASE_URL(self) -> str:
+        return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
     
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
